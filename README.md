@@ -1,68 +1,88 @@
-# shoulder
-shoulder eval 
-def shoulder_assessment(flexion_angle, abduction_angle, er_angle):
-    """
-    Calculates shoulder health based on spreadsheet criteria.
-    Inputs: Angles in degrees.
-    """
+import streamlit as st
+import cv2
+import mediapipe as mp
+import numpy as np
+
+# --- 1. AI ANGLE CALCULATION LOGIC ---
+def calculate_angle(a, b, c):
+    a = np.array(a) # First point (e.g., Hip)
+    b = np.array(b) # Mid point (e.g., Shoulder)
+    c = np.array(c) # End point (e.g., Elbow)
     
-    # 1. OH Flexion ROM Scoring
-    if flexion_angle >= 160:
-        flex_score, flex_color = 2, "Green (Normal)"
-    elif 140 <= flexion_angle < 160:
-        flex_score, flex_color = 1, "Yellow (Moderate)"
-    else:
-        flex_score, flex_color = 0, "Red (Poor)"
+    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+    angle = np.abs(radians*180.0/np.pi)
+    if angle > 180.0:
+        angle = 360-angle
+    return angle
 
-    # 2. Shoulder Abduction Scoring
-    if abduction_angle >= 170:
-        abd_score, abd_color = 2, "Green (Normal)"
-    elif 135 <= abduction_angle < 170:
-        abd_score, abd_color = 1, "Yellow (Moderate)"
-    else:
-        abd_score, abd_color = 0, "Red (Poor)"
-
-    # 3. 90/90 External Rotation Scoring
-    if er_angle >= 90:
-        er_score, er_color = 2, "Green (Normal)"
-    elif 70 <= er_angle < 90:
-        er_score, er_color = 1, "Yellow (Moderate)"
-    else:
-        er_score, er_color = 0, "Red (Poor)"
-
-    # Calculate Total
-    total_score = flex_score + abd_score + er_score
+# --- 2. YOUR SPREADSHEET SCORING LOGIC ---
+def get_recommendation(flex, abd, er):
+    # Points based on your specific criteria
+    f_pts = 2 if flex >= 160 else (1 if flex >= 140 else 0)
+    a_pts = 2 if abd >= 170 else (1 if abd >= 135 else 0)
+    e_pts = 2 if er >= 90 else (1 if er >= 70 else 0)
     
-    # Determine "Safe to Hit" and "Action Needed"
-    if total_score >= 5:
-        safe_to_hit = "Yes"
-        action_needed = "No action needed"
-        risk_level = "Low"
-    elif 3 <= total_score <= 4:
-        safe_to_hit = "Caution"
-        action_needed = "Needs mobility/motivation drills"
-        risk_level = "Moderate"
+    total = f_pts + a_pts + e_pts
+    
+    if total >= 5:
+        return total, "✅ SAFE TO HIT", "No action needed", "green"
+    elif 3 <= total <= 4:
+        return total, "⚠️ CAUTION", "Needs motivation/mobility drills", "orange"
     else:
-        safe_to_hit = "No"
-        action_needed = "Needs Rehab / Physical Therapy"
-        risk_level = "High"
+        return total, "❌ DO NOT HIT", "Needs Rehab / Physical Therapy", "red"
 
-    return {
-        "Total Score": total_score,
-        "Risk Level": risk_level,
-        "Safe to Hit": safe_to_hit,
-        "Action Needed": action_needed,
-        "Details": {
-            "Flexion": flex_color,
-            "Abduction": abd_color,
-            "ER": er_color
-        }
-    }
+# --- 3. STREAMLIT INTERFACE ---
+st.title("AI Shoulder Form Check")
+st.write("Stand sideways for Flexion or face forward for Abduction.")
 
-# --- TEST IT OUT ---
-# Example: An athlete with limited flexion and abduction
-athlete_results = shoulder_assessment(flexion_angle=145, abduction_angle=120, er_angle=95)
+# Placeholder for the webcam feed
+frame_placeholder = st.empty()
+result_placeholder = st.empty()
 
-print(f"TOTAL SCORE: {athlete_results['Total Score']}/6")
-print(f"SAFE TO HIT: {athlete_results['Safe to Hit']}")
-print(f"ACTION NEEDED: {athlete_results['Action Needed']}")
+# Initialize MediaPipe
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+
+cap = cv2.VideoCapture(0)
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Convert to RGB for MediaPipe
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(image)
+
+    angle_to_show = 0
+    
+    if results.pose_landmarks:
+        landmarks = results.pose_landmarks.landmark
+        
+        # Get coordinates for Shoulder Flexion (Hip-Shoulder-Elbow)
+        shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x, landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+        hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x, landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y]
+        elbow = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x, landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
+        
+        angle_to_show = calculate_angle(hip, shoulder, elbow)
+
+        # Draw on image
+        mp.solutions.drawing_utils.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+
+    # Display the Video
+    frame_placeholder.image(image, channels="RGB")
+
+    # Display Live Scoring (Assuming we are testing Flexion live)
+    total, verdict, action, color = get_recommendation(angle_to_show, 175, 95) # Placeholders for Abd/ER
+    
+    result_placeholder.markdown(f"""
+    ### Current Live Angle: {int(angle_to_show)}°
+    ---
+    **Status:** :{color}[{verdict}]  
+    **Action:** {action}
+    """)
+
+    if st.button("Stop App"):
+        break
+
+cap.release()
